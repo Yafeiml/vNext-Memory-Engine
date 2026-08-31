@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <Description>Local edge daemon, MCP proxy, and offline outbox for vNext Memory Engine.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../VNext.Memory.Domain/VNext.Memory.Domain.csproj" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+  </ItemGroup>
+</Project>

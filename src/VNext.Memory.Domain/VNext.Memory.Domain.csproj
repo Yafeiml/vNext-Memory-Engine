@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Domain contracts and models for vNext Memory Engine.</Description>
+  </PropertyGroup>
+</Project>

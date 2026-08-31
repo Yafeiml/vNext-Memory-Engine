@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-vnext_memory}
+      POSTGRES_USER: ${POSTGRES_USER:-vnext}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vnext-dev-password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vnext} -d ${POSTGRES_DB:-vnext_memory}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - vnext-postgres:/var/lib/postgresql/data
+
+  memory-core:
+    build:
+      context: .
+      dockerfile: src/VNext.Memory.Core/Dockerfile
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Memory: Host=postgres;Port=5432;Database=${POSTGRES_DB:-vnext_memory};Username=${POSTGRES_USER:-vnext};Password=${POSTGRES_PASSWORD:-vnext-dev-password}
+      Security__BootstrapToken: ${VME_BOOTSTRAP_TOKEN:-development-only-change-me}
+    ports:
+      - "7337:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vnext-postgres:

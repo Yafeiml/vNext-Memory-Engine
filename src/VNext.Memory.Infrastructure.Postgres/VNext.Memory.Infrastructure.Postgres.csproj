@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>PostgreSQL persistence for vNext Memory Engine.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../VNext.Memory.Domain/VNext.Memory.Domain.csproj" />
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>

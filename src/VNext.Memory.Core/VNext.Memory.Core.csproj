@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <Description>Internet-deployable authority service and MCP gateway for vNext Memory Engine.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../VNext.Memory.Domain/VNext.Memory.Domain.csproj" />
+    <ProjectReference Include="../VNext.Memory.Application/VNext.Memory.Application.csproj" />
+    <ProjectReference Include="../VNext.Memory.Infrastructure.Postgres/VNext.Memory.Infrastructure.Postgres.csproj" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+  </ItemGroup>
+</Project>

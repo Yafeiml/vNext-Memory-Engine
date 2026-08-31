@@ -1,0 +1,9 @@
+<Project Sdk="MSTest.Sdk/4.3.3">
+  <PropertyGroup>
+    <Description>Unit tests for vNext Memory Engine governance and scope resolution.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/VNext.Memory.Domain/VNext.Memory.Domain.csproj" />
+    <ProjectReference Include="../../src/VNext.Memory.Application/VNext.Memory.Application.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VNext.Memory.Domain/VNext.Memory.Domain.csproj" />
+    <Project Path="src/VNext.Memory.Application/VNext.Memory.Application.csproj" />
+    <Project Path="src/VNext.Memory.Infrastructure.Postgres/VNext.Memory.Infrastructure.Postgres.csproj" />
+    <Project Path="src/VNext.Memory.Core/VNext.Memory.Core.csproj" />
+    <Project Path="src/VNext.Memory.Edge/VNext.Memory.Edge.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VNext.Memory.Tests/VNext.Memory.Tests.csproj" />
+  </Folder>
+</Solution>

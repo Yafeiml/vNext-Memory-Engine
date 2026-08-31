@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Description>Admission, scope resolution, and context compilation for vNext Memory Engine.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../VNext.Memory.Domain/VNext.Memory.Domain.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>

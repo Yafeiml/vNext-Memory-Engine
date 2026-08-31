@@ -9,3 +9,6 @@ artifacts/
 coverage/
 TestResults/
 **/data/
+*.db
+*.db-shm
+*.db-wal
