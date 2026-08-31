@@ -26,7 +26,7 @@ jobs:
         run: dotnet build VNext.Memory.Engine.slnx --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test tests/VNext.Memory.Tests/VNext.Memory.Tests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+        run: dotnet test tests/VNext.Memory.Tests/VNext.Memory.Tests.csproj --configuration Release --no-build --output Detailed
 
   docker:
     runs-on: ubuntu-latest
