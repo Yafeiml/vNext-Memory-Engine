@@ -26,6 +26,39 @@ public enum SourceTrust
     PolicyManaged = 100
 }
 
+public enum EvidenceChannel
+{
+    LegacyClient = 0,
+    AgentObservation = 1,
+    UserMessage = 2,
+    ToolResult = 3,
+    CodeArtifact = 4,
+    TestResult = 5,
+    GitResult = 6,
+    ExternalContent = 7,
+    Administrative = 8,
+    OutcomeFeedback = 9
+}
+
+public enum AssuranceLevel
+{
+    Unverified = 0,
+    Authenticated = 1,
+    Signed = 2,
+    Deterministic = 3,
+    HumanAttested = 4,
+    PolicyManaged = 5
+}
+
+public enum RetrievalOutcome
+{
+    Helpful = 0,
+    Irrelevant = 1,
+    Confirmed = 2,
+    Contradicted = 3,
+    Harmful = 4
+}
+
 public enum AdmissionDisposition
 {
     Reject = 0,

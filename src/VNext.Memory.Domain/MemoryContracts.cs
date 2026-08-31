@@ -12,19 +12,74 @@ public sealed record MemoryRecordRequest
 {
     public required string Content { get; init; }
     public MemoryKind Kind { get; init; } = MemoryKind.Note;
+
+    // Compatibility claim only. SourceAssuranceEvaluator decides the effective trust.
     public SourceTrust Trust { get; init; } = SourceTrust.AgentInferred;
+
     public MemoryScope Scope { get; init; } = new();
     public string? MemoryKey { get; init; }
     public string? SourceType { get; init; }
     public string? SourceReference { get; init; }
     public string? AgentId { get; init; }
     public string? SessionId { get; init; }
+
+    // Compatibility claims only. They become effective only on an assured channel.
     public bool ExplicitRemember { get; init; }
     public bool IsCorrection { get; init; }
     public bool HasDeterministicEvidence { get; init; }
+
     public DateTimeOffset? OccurredAt { get; init; }
     public IReadOnlyList<string>? Tags { get; init; }
 }
+
+public sealed record EvidenceProof(
+    string? ProviderEventType = null,
+    string? ToolName = null,
+    string? Command = null,
+    int? ExitCode = null,
+    string? ArtifactDigest = null,
+    string? CommitSha = null,
+    string? TestRunId = null);
+
+public sealed record SignedEvidenceEnvelope(
+    Guid EventId,
+    EvidenceChannel Channel,
+    DateTimeOffset CapturedAt,
+    string Nonce,
+    string Adapter,
+    string? AdapterVersion,
+    EvidenceProof? Proof,
+    MemoryRecordRequest Observation,
+    string PayloadHash,
+    string Signature);
+
+public sealed record SourceAssertionContext(
+    EvidenceChannel Channel,
+    AssuranceLevel Level,
+    SourceTrust ClaimedTrust,
+    bool SignatureVerified,
+    string Adapter,
+    string? AdapterVersion = null,
+    EvidenceProof? Proof = null,
+    Guid? EventId = null,
+    string? PayloadHash = null,
+    IReadOnlyList<string>? ReasonCodes = null);
+
+public sealed record SourceAssurance(
+    EvidenceChannel Channel,
+    AssuranceLevel Level,
+    SourceTrust ClaimedTrust,
+    SourceTrust EffectiveTrust,
+    bool SignatureVerified,
+    bool ExplicitRememberVerified,
+    bool CorrectionVerified,
+    bool DeterministicEvidenceVerified,
+    string Adapter,
+    string? AdapterVersion,
+    EvidenceProof? Proof,
+    Guid? EventId,
+    string? PayloadHash,
+    IReadOnlyList<string> ReasonCodes);
 
 public sealed record MemorySearchRequest
 {
@@ -43,6 +98,27 @@ public sealed record ContextCompileRequest
     public int TokenBudget { get; init; } = 1800;
     public bool IncludeProbation { get; init; } = true;
 }
+
+public sealed record RetrievalFeedbackRequest
+{
+    public required Guid TraceId { get; init; }
+    public required RetrievalOutcome Outcome { get; init; }
+    public IReadOnlyList<Guid>? ClaimIds { get; init; }
+    public string? Detail { get; init; }
+    public bool HasDeterministicEvidence { get; init; }
+}
+
+public sealed record SignedRetrievalFeedbackEnvelope(
+    Guid EventId,
+    EvidenceChannel Channel,
+    DateTimeOffset CapturedAt,
+    string Nonce,
+    string Adapter,
+    string? AdapterVersion,
+    EvidenceProof? Proof,
+    RetrievalFeedbackRequest Feedback,
+    string PayloadHash,
+    string Signature);
 
 public sealed record AdmissionDecision(
     AdmissionDisposition Disposition,
@@ -65,7 +141,8 @@ public sealed record MemoryCandidate(
     bool IsCorrection,
     bool HasDeterministicEvidence,
     DateTimeOffset OccurredAt,
-    IReadOnlyList<string> Tags);
+    IReadOnlyList<string> Tags,
+    SourceAssurance? Assurance = null);
 
 public sealed record EvidenceEvent(
     Guid Id,
@@ -78,7 +155,8 @@ public sealed record EvidenceEvent(
     string? SourceReference,
     string ContentHash,
     DateTimeOffset OccurredAt,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    SourceAssurance? Assurance = null);
 
 public sealed record MemoryClaim(
     Guid Id,
@@ -105,7 +183,9 @@ public sealed record RecordMemoryResult(
     MemoryScope AppliedScope,
     IReadOnlyList<string> ReasonCodes,
     bool Queued = false,
-    string? Message = null);
+    string? Message = null,
+    SourceAssurance? Assurance = null,
+    bool Replayed = false);
 
 public sealed record MemorySearchHit(
     Guid ClaimId,
@@ -117,7 +197,35 @@ public sealed record MemorySearchHit(
     double Confidence,
     double Relevance,
     DateTimeOffset UpdatedAt,
-    string ProvenanceLabel);
+    string ProvenanceLabel,
+    Guid? RetrievalTraceId = null);
+
+public sealed record MemorySearchResponse(
+    Guid TraceId,
+    IReadOnlyList<MemorySearchHit> Items,
+    DateTimeOffset CreatedAt);
+
+public sealed record RetrievalTraceItem(
+    Guid ClaimId,
+    int Rank,
+    double Relevance);
+
+public sealed record RetrievalTrace(
+    Guid Id,
+    RequestIdentity Identity,
+    string Query,
+    MemoryScope Scope,
+    IReadOnlyList<RetrievalTraceItem> Items,
+    DateTimeOffset CreatedAt);
+
+public sealed record RetrievalFeedbackResult(
+    Guid TraceId,
+    RetrievalOutcome Outcome,
+    int AffectedClaims,
+    bool Accepted,
+    bool Authoritative,
+    IReadOnlyList<string> ReasonCodes,
+    bool Replayed = false);
 
 public sealed record ContextSection(
     string Name,
@@ -128,7 +236,8 @@ public sealed record MemoryContextPacket(
     MemoryScope Scope,
     IReadOnlyList<ContextSection> Sections,
     int EstimatedTokens,
-    DateTimeOffset CompiledAt);
+    DateTimeOffset CompiledAt,
+    Guid? RetrievalTraceId = null);
 
 public sealed record EvidenceSummary(
     Guid EvidenceId,
@@ -137,7 +246,8 @@ public sealed record EvidenceSummary(
     string? SourceReference,
     string ActorId,
     string ContentPreview,
-    DateTimeOffset OccurredAt);
+    DateTimeOffset OccurredAt,
+    SourceAssurance? Assurance = null);
 
 public sealed record AdmissionSummary(
     AdmissionDisposition Disposition,
@@ -171,4 +281,5 @@ public sealed record AuthenticatedDevice(
 
 public sealed record PersistMemoryResult(
     Guid EvidenceId,
-    MemoryClaim? Claim);
+    MemoryClaim? Claim,
+    bool IsReplay = false);

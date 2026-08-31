@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using VNext.Memory.Application.Admission;
+using VNext.Memory.Application.Assurance;
 using VNext.Memory.Application.Scope;
 using VNext.Memory.Application.Security;
 using VNext.Memory.Application.Services;
@@ -15,7 +16,10 @@ public static class DependencyInjection
         services.AddSingleton<ISecretDetector, SecretDetector>();
         services.AddSingleton<IPermissionRiskDetector, PermissionRiskDetector>();
         services.AddSingleton<IMemoryAdmissionController, MemoryAdmissionController>();
+        services.AddSingleton<ISourceAssuranceEvaluator, SourceAssuranceEvaluator>();
         services.AddSingleton<IScopeResolver, ScopeResolver>();
+        services.AddSingleton<IRetrievalTelemetryStore>(
+            NoopRetrievalTelemetryStore.Instance);
         services.AddScoped<IMemoryService, MemoryService>();
         return services;
     }
