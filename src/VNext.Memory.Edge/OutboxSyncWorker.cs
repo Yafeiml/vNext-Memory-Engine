@@ -39,11 +39,15 @@ public sealed class OutboxSyncWorker(
         {
             try
             {
+                var actorId = string.IsNullOrWhiteSpace(item.Envelope.Observation.AgentId)
+                    ? _options.DefaultActorId
+                    : item.Envelope.Observation.AgentId;
+
                 await coreClient
-                    .RecordAsync(
-                        item.Request,
-                        item.ActorId,
-                        item.SessionId,
+                    .IngestAsync(
+                        item.Envelope,
+                        actorId,
+                        item.Envelope.Observation.SessionId,
                         cancellationToken)
                     .ConfigureAwait(false);
 
@@ -58,7 +62,7 @@ public sealed class OutboxSyncWorker(
             {
                 logger.LogWarning(
                     exception,
-                    "Failed to synchronize outbox item {OutboxId}.",
+                    "Failed to synchronize signed outbox item {OutboxId}.",
                     item.Id);
 
                 await outbox

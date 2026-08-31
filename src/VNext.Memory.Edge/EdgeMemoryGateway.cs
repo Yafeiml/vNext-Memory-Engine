@@ -3,14 +3,35 @@ using VNext.Memory.Domain;
 
 namespace VNext.Memory.Edge;
 
+public sealed record CapturedObservation(
+    MemoryRecordRequest Observation,
+    EvidenceChannel Channel,
+    string Adapter,
+    string? AdapterVersion = null,
+    EvidenceProof? Proof = null,
+    Guid? EventId = null,
+    DateTimeOffset? CapturedAt = null);
+
 public interface IEdgeMemoryGateway
 {
     Task<RecordMemoryResult> RecordAsync(
         MemoryRecordRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<RecordMemoryResult> RecordCapturedAsync(
+        CapturedObservation captured,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<MemorySearchHit>> SearchAsync(
         MemorySearchRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<MemorySearchResponse> SearchWithTraceAsync(
+        MemorySearchRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<RetrievalFeedbackResult> RecordFeedbackAsync(
+        RetrievalFeedbackRequest request,
         CancellationToken cancellationToken = default);
 
     Task<MemoryContextPacket> CompileContextAsync(
@@ -32,41 +53,64 @@ public sealed class EdgeMemoryGateway(
 {
     private readonly EdgeOptions _options = options.Value;
 
-    public async Task<RecordMemoryResult> RecordAsync(
+    public Task<RecordMemoryResult> RecordAsync(
         MemoryRecordRequest request,
+        CancellationToken cancellationToken = default) =>
+        RecordCapturedAsync(
+            new CapturedObservation(
+                request,
+                EvidenceChannel.AgentObservation,
+                "vnext-memory-edge",
+                "0.2.0"),
+            cancellationToken);
+
+    public async Task<RecordMemoryResult> RecordCapturedAsync(
+        CapturedObservation captured,
         CancellationToken cancellationToken = default)
     {
-        var actorId = ResolveActor(request.AgentId);
-        var sessionId = request.SessionId;
+        ArgumentNullException.ThrowIfNull(captured);
+        ArgumentNullException.ThrowIfNull(captured.Observation);
+
+        var actorId = ResolveActor(captured.Observation.AgentId);
+        var sessionId = captured.Observation.SessionId;
+        var envelope = EvidenceEnvelopeCryptography.SignEvidence(
+            captured.Observation,
+            captured.Channel,
+            captured.Adapter,
+            _options.CoreToken,
+            captured.Proof,
+            captured.AdapterVersion,
+            captured.EventId,
+            captured.CapturedAt);
 
         try
         {
             return await coreClient
-                .RecordAsync(request, actorId, sessionId, cancellationToken)
+                .IngestAsync(envelope, actorId, sessionId, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (CoreMemoryRequestException exception) when (exception.Retryable)
         {
             logger.LogWarning(
                 exception,
-                "Memory Core is temporarily unavailable. Queuing observation locally.");
+                "Memory Core is temporarily unavailable. Queuing signed evidence locally.");
         }
         catch (HttpRequestException exception)
         {
             logger.LogWarning(
                 exception,
-                "Memory Core is unreachable. Queuing observation locally.");
+                "Memory Core is unreachable. Queuing signed evidence locally.");
         }
         catch (TaskCanceledException exception)
             when (!cancellationToken.IsCancellationRequested)
         {
             logger.LogWarning(
                 exception,
-                "Memory Core timed out. Queuing observation locally.");
+                "Memory Core timed out. Queuing signed evidence locally.");
         }
 
         await outbox
-            .EnqueueAsync(request, actorId, sessionId, cancellationToken)
+            .EnqueueAsync(envelope, cancellationToken)
             .ConfigureAwait(false);
 
         return new RecordMemoryResult(
@@ -74,10 +118,10 @@ public sealed class EdgeMemoryGateway(
             null,
             AdmissionDisposition.EvidenceOnly,
             0,
-            request.Scope,
-            ["QUEUED_AT_EDGE"],
+            captured.Observation.Scope,
+            ["QUEUED_AT_EDGE", "SIGNED_ENVELOPE_PRESERVED"],
             Queued: true,
-            Message: "Observation is stored in the local outbox and will be synchronized.");
+            Message: $"Signed evidence {envelope.EventId:D} is stored in the local outbox.");
     }
 
     public Task<IReadOnlyList<MemorySearchHit>> SearchAsync(
@@ -88,6 +132,33 @@ public sealed class EdgeMemoryGateway(
             _options.DefaultActorId,
             null,
             cancellationToken);
+
+    public Task<MemorySearchResponse> SearchWithTraceAsync(
+        MemorySearchRequest request,
+        CancellationToken cancellationToken = default) =>
+        coreClient.SearchWithTraceAsync(
+            request,
+            _options.DefaultActorId,
+            null,
+            cancellationToken);
+
+    public Task<RetrievalFeedbackResult> RecordFeedbackAsync(
+        RetrievalFeedbackRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var envelope = EvidenceEnvelopeCryptography.SignFeedback(
+            request,
+            EvidenceChannel.OutcomeFeedback,
+            "vnext-memory-edge",
+            _options.CoreToken,
+            adapterVersion: "0.2.0");
+
+        return coreClient.FeedbackAsync(
+            envelope,
+            _options.DefaultActorId,
+            null,
+            cancellationToken);
+    }
 
     public Task<MemoryContextPacket> CompileContextAsync(
         ContextCompileRequest request,

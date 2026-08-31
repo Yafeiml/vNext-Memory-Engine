@@ -19,7 +19,20 @@ public sealed class CoreMemoryClient(
 
     private readonly EdgeOptions _options = options.Value;
 
-    public Task<RecordMemoryResult> RecordAsync(
+    public Task<RecordMemoryResult> IngestAsync(
+        SignedEvidenceEnvelope envelope,
+        string actorId,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        SendAsync<SignedEvidenceEnvelope, RecordMemoryResult>(
+            HttpMethod.Post,
+            "/api/v1/evidence/ingest",
+            envelope,
+            actorId,
+            sessionId,
+            cancellationToken);
+
+    public Task<RecordMemoryResult> RecordLegacyAsync(
         MemoryRecordRequest request,
         string actorId,
         string? sessionId,
@@ -41,6 +54,32 @@ public sealed class CoreMemoryClient(
             HttpMethod.Post,
             "/api/v1/memories/search",
             request,
+            actorId,
+            sessionId,
+            cancellationToken);
+
+    public Task<MemorySearchResponse> SearchWithTraceAsync(
+        MemorySearchRequest request,
+        string actorId,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        SendAsync<MemorySearchRequest, MemorySearchResponse>(
+            HttpMethod.Post,
+            "/api/v1/retrieval/search",
+            request,
+            actorId,
+            sessionId,
+            cancellationToken);
+
+    public Task<RetrievalFeedbackResult> FeedbackAsync(
+        SignedRetrievalFeedbackEnvelope envelope,
+        string actorId,
+        string? sessionId,
+        CancellationToken cancellationToken) =>
+        SendAsync<SignedRetrievalFeedbackEnvelope, RetrievalFeedbackResult>(
+            HttpMethod.Post,
+            "/api/v1/retrieval/feedback",
+            envelope,
             actorId,
             sessionId,
             cancellationToken);

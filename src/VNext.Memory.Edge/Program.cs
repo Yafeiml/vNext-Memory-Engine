@@ -1,6 +1,8 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Protocol;
+using VNext.Memory.Domain;
 using VNext.Memory.Edge;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -25,13 +27,15 @@ if (string.IsNullOrWhiteSpace(edgeOptions.CoreToken))
 
 builder.Services.AddSingleton<SqliteOutbox>();
 builder.Services.AddScoped<IEdgeMemoryGateway, EdgeMemoryGateway>();
+builder.Services.AddScoped<HookIngestionService>();
+builder.Services.AddSingleton<HookTokenValidator>();
 builder.Services.AddHostedService<OutboxSyncWorker>();
 
 builder.Services.AddHttpClient<CoreMemoryClient>(client =>
 {
     client.BaseAddress = new Uri(edgeOptions.CoreUrl);
     client.Timeout = TimeSpan.FromSeconds(30);
-    client.DefaultRequestHeaders.UserAgent.ParseAdd("vnext-memory-edge/0.1.0");
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("vnext-memory-edge/0.2.0");
 });
 
 builder.Services
@@ -40,7 +44,7 @@ builder.Services
         options.ServerInfo = new Implementation
         {
             Name = "vnext-memory-edge",
-            Version = "0.1.0"
+            Version = "0.2.0"
         };
     })
     .WithHttpTransport()
@@ -78,7 +82,11 @@ app.MapGet("/health", () => Results.Ok(new
 {
     status = "healthy",
     service = "vnext-memory-edge",
-    core = edgeOptions.CoreUrl
+    version = "0.2.0",
+    core = edgeOptions.CoreUrl,
+    hookIngestion = string.IsNullOrWhiteSpace(edgeOptions.HookToken)
+        ? "disabled"
+        : "enabled"
 }));
 
 var api = app.MapGroup("/api/v1");
@@ -86,7 +94,7 @@ var api = app.MapGroup("/api/v1");
 api.MapPost(
     "/memories/record",
     async (
-        VNext.Memory.Domain.MemoryRecordRequest request,
+        MemoryRecordRequest request,
         IEdgeMemoryGateway gateway,
         CancellationToken cancellationToken) =>
         Results.Ok(await gateway.RecordAsync(request, cancellationToken)));
@@ -94,21 +102,92 @@ api.MapPost(
 api.MapPost(
     "/memories/search",
     async (
-        VNext.Memory.Domain.MemorySearchRequest request,
+        MemorySearchRequest request,
         IEdgeMemoryGateway gateway,
         CancellationToken cancellationToken) =>
         Results.Ok(await gateway.SearchAsync(request, cancellationToken)));
 
 api.MapPost(
+    "/retrieval/search",
+    async (
+        MemorySearchRequest request,
+        IEdgeMemoryGateway gateway,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await gateway.SearchWithTraceAsync(request, cancellationToken)));
+
+api.MapPost(
+    "/retrieval/feedback",
+    async (
+        RetrievalFeedbackRequest request,
+        IEdgeMemoryGateway gateway,
+        CancellationToken cancellationToken) =>
+        Results.Ok(await gateway.RecordFeedbackAsync(request, cancellationToken)));
+
+api.MapPost(
     "/context/compile",
     async (
-        VNext.Memory.Domain.ContextCompileRequest request,
+        ContextCompileRequest request,
         IEdgeMemoryGateway gateway,
         CancellationToken cancellationToken) =>
         Results.Ok(await gateway.CompileContextAsync(request, cancellationToken)));
 
+api.MapPost(
+    "/hooks/{provider}",
+    async (
+        string provider,
+        JsonElement hookEvent,
+        HttpContext httpContext,
+        HookTokenValidator tokenValidator,
+        HookIngestionService ingestionService,
+        CancellationToken cancellationToken) =>
+    {
+        if (!tokenValidator.IsEnabled)
+        {
+            return Results.Json(
+                new
+                {
+                    error = "hook_ingestion_disabled",
+                    detail = "Configure Edge:HookToken before enabling assured hooks."
+                },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+
+        if (!tokenValidator.Validate(
+                httpContext.Request.Headers["X-VME-Hook-Token"].FirstOrDefault()))
+        {
+            return Results.Json(
+                new
+                {
+                    error = "invalid_hook_token"
+                },
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var scope = new MemoryScope
+        {
+            ProjectId = Header(httpContext, "X-VME-Project"),
+            RepositoryId = Header(httpContext, "X-VME-Repository"),
+            Branch = Header(httpContext, "X-VME-Branch"),
+            WorktreeId = Header(httpContext, "X-VME-Worktree"),
+            Environment = Header(httpContext, "X-VME-Environment"),
+            TaskId = Header(httpContext, "X-VME-Task")
+        };
+
+        return Results.Ok(await ingestionService.IngestAsync(
+            provider,
+            hookEvent,
+            scope,
+            cancellationToken));
+    });
+
 app.MapMcp("/mcp");
 
 app.Run();
+
+static string? Header(HttpContext context, string name)
+{
+    var value = context.Request.Headers[name].FirstOrDefault();
+    return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}
 
 public partial class Program;

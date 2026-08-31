@@ -40,7 +40,7 @@ jobs:
       - name: Build edge image
         run: docker build -f src/VNext.Memory.Edge/Dockerfile -t vnext-memory-edge:ci .
 
-      - name: Smoke test distributed deployment
+      - name: Smoke test distributed source assurance
         shell: bash
         run: |
           set -euo pipefail
@@ -86,6 +86,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{"tenantId":"ci","principalId":"ci-user","deviceName":"ci-edge"}')"
           device_token="$(jq -er '.deviceToken' <<<"$device_response")"
+          hook_token='ci-hook-secret-with-entropy'
 
           docker run -d \
             --name vnext-edge \
@@ -97,6 +98,7 @@ jobs:
             -e Edge__TenantId=ci \
             -e Edge__PrincipalId=ci-user \
             -e Edge__DefaultActorId=codex \
+            -e Edge__HookToken="$hook_token" \
             vnext-memory-edge:ci
 
           for _ in {1..30}; do
@@ -107,15 +109,17 @@ jobs:
           done
           curl -fsS http://127.0.0.1:7338/health
 
-          record_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/memories/record \
+          # A normal agent call is signed by Edge, but it is still only an
+          # AgentObservation. Self-declared ToolObserved trust must be replaced.
+          spoof_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/memories/record \
             -H 'Content-Type: application/json' \
             -d '{
-              "content":"Setting ShowInTaskbar alone did not fix the Windows taskbar issue.",
+              "content":"An agent claims that changing ShowInTaskbar fixed the issue.",
               "kind":"FailedApproach",
               "trust":"ToolObserved",
-              "memoryKey":"windows.taskbar.show-in-taskbar",
-              "sourceType":"test-run",
-              "sourceReference":"ci:test-run:1",
+              "memoryKey":"windows.taskbar.unverified-agent-claim",
+              "sourceType":"agent-claim",
+              "sourceReference":"agent:claim:1",
               "agentId":"codex",
               "hasDeterministicEvidence":true,
               "scope":{
@@ -125,12 +129,70 @@ jobs:
                 "environment":"ci"
               }
             }')"
-          jq -e '.disposition == "Active"' <<<"$record_response" >/dev/null
+          jq -e '
+            .disposition == "Probation" and
+            .assurance.channel == "AgentObservation" and
+            .assurance.effectiveTrust == "AgentInferred" and
+            .assurance.signatureVerified == true and
+            .assurance.deterministicEvidenceVerified == false
+          ' <<<"$spoof_response" >/dev/null
 
-          search_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/memories/search \
+          hook_payload='{
+            "session_id":"ci-claude-session",
+            "prompt_id":"ci-prompt-1",
+            "transcript_path":"/tmp/ci-transcript.jsonl",
+            "cwd":"/workspace/vnext-memory",
+            "permission_mode":"default",
+            "hook_event_name":"PostToolUseFailure",
+            "tool_name":"Bash",
+            "tool_input":{
+              "command":"dotnet test",
+              "description":"Run the complete test suite"
+            },
+            "tool_use_id":"toolu_ci_test_1",
+            "error":"Exit code 1\nA regression test for the Windows taskbar failed.",
+            "is_interrupt":false,
+            "duration_ms":1250
+          }'
+
+          hook_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/hooks/claude-code \
+            -H "X-VME-Hook-Token: $hook_token" \
+            -H 'X-VME-Project: vnext-ci' \
+            -H 'X-VME-Repository: github.com/yafeiml/vnext-memory-engine' \
+            -H 'X-VME-Branch: main' \
+            -H 'X-VME-Environment: ci' \
+            -H 'Content-Type: application/json' \
+            -d "$hook_payload")"
+          jq -e '
+            .observationCount == 1 and
+            .results[0].disposition == "Active" and
+            .results[0].assurance.channel == "TestResult" and
+            .results[0].assurance.effectiveTrust == "ToolObserved" and
+            .results[0].assurance.level == "Deterministic" and
+            .results[0].assurance.deterministicEvidenceVerified == true
+          ' <<<"$hook_response" >/dev/null
+          evidence_id="$(jq -er '.results[0].evidenceId' <<<"$hook_response")"
+          claim_id="$(jq -er '.results[0].claimId' <<<"$hook_response")"
+
+          # Retrying the same provider event must not reinforce the claim twice.
+          replay_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/hooks/claude-code \
+            -H "X-VME-Hook-Token: $hook_token" \
+            -H 'X-VME-Project: vnext-ci' \
+            -H 'X-VME-Repository: github.com/yafeiml/vnext-memory-engine' \
+            -H 'X-VME-Branch: main' \
+            -H 'X-VME-Environment: ci' \
+            -H 'Content-Type: application/json' \
+            -d "$hook_payload")"
+          jq -e --arg evidence "$evidence_id" --arg claim "$claim_id" '
+            .results[0].replayed == true and
+            .results[0].evidenceId == $evidence and
+            .results[0].claimId == $claim
+          ' <<<"$replay_response" >/dev/null
+
+          trace_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/retrieval/search \
             -H 'Content-Type: application/json' \
             -d '{
-              "query":"ShowInTaskbar taskbar",
+              "query":"dotnet test regression failed",
               "limit":10,
               "scope":{
                 "projectId":"vnext-ci",
@@ -139,12 +201,31 @@ jobs:
                 "environment":"ci"
               }
             }')"
-          jq -e 'length >= 1' <<<"$search_response" >/dev/null
+          trace_id="$(jq -er '.traceId' <<<"$trace_response")"
+          jq -e --arg trace "$trace_id" --arg claim "$claim_id" '
+            (.items | length) >= 1 and
+            (.items | any(.claimId == $claim and .retrievalTraceId == $trace))
+          ' <<<"$trace_response" >/dev/null
+
+          # Agent feedback is recorded but cannot promote/demote claims by itself.
+          feedback_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/retrieval/feedback \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"traceId\":\"$trace_id\",
+              \"outcome\":\"Helpful\",
+              \"claimIds\":[\"$claim_id\"],
+              \"detail\":\"The memory helped locate the regression.\"
+            }")"
+          jq -e '
+            .accepted == true and
+            .authoritative == false and
+            .affectedClaims == 0
+          ' <<<"$feedback_response" >/dev/null
 
           context_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/context/compile \
             -H 'Content-Type: application/json' \
             -d '{
-              "task":"Investigate the Windows taskbar issue",
+              "task":"Investigate the dotnet test taskbar regression",
               "tokenBudget":800,
               "scope":{
                 "projectId":"vnext-ci",
@@ -153,7 +234,47 @@ jobs:
                 "environment":"ci"
               }
             }')"
-          jq -e '.sections | length >= 1' <<<"$context_response" >/dev/null
+          jq -e '
+            (.sections | length) >= 1 and
+            (.retrievalTraceId | type) == "string"
+          ' <<<"$context_response" >/dev/null
+
+          explanation="$(curl -fsS http://127.0.0.1:7337/api/v1/memories/$claim_id/explain \
+            -H "Authorization: Bearer $device_token" \
+            -H 'X-VME-Actor: ci-inspector')"
+          jq -e '
+            .evidence | any(
+              .evidenceId != null and
+              .assurance.channel == "TestResult" and
+              .assurance.signatureVerified == true and
+              .assurance.deterministicEvidenceVerified == true
+            )
+          ' <<<"$explanation" >/dev/null
+
+          # The Core must reject a forged signed endpoint payload.
+          captured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          tamper_status="$(curl -sS -o /tmp/tamper-response.json -w '%{http_code}' \
+            -X POST http://127.0.0.1:7337/api/v1/evidence/ingest \
+            -H "Authorization: Bearer $device_token" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"eventId\":\"11111111-1111-1111-1111-111111111111\",
+              \"channel\":\"AgentObservation\",
+              \"capturedAt\":\"$captured_at\",
+              \"nonce\":\"0123456789abcdef0123456789abcdef\",
+              \"adapter\":\"forged-client\",
+              \"adapterVersion\":\"1\",
+              \"proof\":null,
+              \"observation\":{
+                \"content\":\"forged evidence\",
+                \"kind\":\"TechnicalFact\",
+                \"trust\":\"HumanApproved\"
+              },
+              \"payloadHash\":\"0000000000000000000000000000000000000000000000000000000000000000\",
+              \"signature\":\"0000000000000000000000000000000000000000000000000000000000000000\"
+            }")"
+          test "$tamper_status" = "401"
+          jq -e '.error == "INVALID_EVIDENCE_SIGNATURE"' /tmp/tamper-response.json >/dev/null
 
       - name: Collect smoke logs
         if: always()

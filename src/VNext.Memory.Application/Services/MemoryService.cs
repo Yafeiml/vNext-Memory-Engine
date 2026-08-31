@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using VNext.Memory.Application.Assurance;
 using VNext.Memory.Domain;
 
 namespace VNext.Memory.Application.Services;
@@ -8,44 +9,87 @@ namespace VNext.Memory.Application.Services;
 public sealed partial class MemoryService(
     IMemoryRepository repository,
     IMemoryAdmissionController admissionController,
-    IScopeResolver scopeResolver) : IMemoryService
+    IScopeResolver scopeResolver,
+    ISourceAssuranceEvaluator? sourceAssuranceEvaluator = null,
+    IRetrievalTelemetryStore? telemetryStore = null) : IMemoryService
 {
     private const int MaximumSearchLimit = 100;
+
+    private readonly ISourceAssuranceEvaluator _sourceAssuranceEvaluator =
+        sourceAssuranceEvaluator ?? new SourceAssuranceEvaluator();
+    private readonly IRetrievalTelemetryStore _telemetryStore =
+        telemetryStore ?? NoopRetrievalTelemetryStore.Instance;
+
+    public Task<RecordMemoryResult> RecordAsync(
+        MemoryRecordRequest request,
+        RequestIdentity identity,
+        CancellationToken cancellationToken = default) =>
+        RecordAsync(
+            request,
+            identity,
+            new SourceAssertionContext(
+                identity.IsAdministrator
+                    ? EvidenceChannel.Administrative
+                    : EvidenceChannel.LegacyClient,
+                identity.IsAdministrator
+                    ? AssuranceLevel.HumanAttested
+                    : AssuranceLevel.Authenticated,
+                request.Trust,
+                SignatureVerified: false,
+                identity.IsAdministrator
+                    ? "core-administrator"
+                    : "legacy-client"),
+            cancellationToken);
 
     public async Task<RecordMemoryResult> RecordAsync(
         MemoryRecordRequest request,
         RequestIdentity identity,
+        SourceAssertionContext assertionContext,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(assertionContext);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Content);
 
+        var assurance = _sourceAssuranceEvaluator.Evaluate(
+            request,
+            identity,
+            assertionContext);
         var statement = NormalizeStatement(request.Content);
         var scope = scopeResolver.InferAndNormalizeScope(request, identity);
         var resolutionPolicy = ResolvePolicy(request.Kind, request.MemoryKey);
+        var sourceType = string.IsNullOrWhiteSpace(request.SourceType)
+            ? $"{assurance.Adapter}:{assurance.Channel.ToString().ToLowerInvariant()}"
+            : request.SourceType.Trim();
 
         var candidate = new MemoryCandidate(
             Guid.NewGuid(),
             statement,
             NormalizeKey(request.MemoryKey),
             request.Kind,
-            request.Trust,
+            assurance.EffectiveTrust,
             scope,
             resolutionPolicy,
-            string.IsNullOrWhiteSpace(request.SourceType)
-                ? "agent-observation"
-                : request.SourceType.Trim(),
+            sourceType,
             NormalizeOptional(request.SourceReference),
-            request.ExplicitRemember,
-            request.IsCorrection,
-            request.HasDeterministicEvidence,
+            assurance.ExplicitRememberVerified,
+            assurance.CorrectionVerified,
+            assurance.DeterministicEvidenceVerified,
             request.OccurredAt ?? DateTimeOffset.UtcNow,
-            NormalizeTags(request.Tags));
+            NormalizeTags(request.Tags),
+            assurance);
 
         var decision = await admissionController
             .EvaluateAsync(candidate, cancellationToken)
             .ConfigureAwait(false);
+        decision = decision with
+        {
+            ReasonCodes = assurance.ReasonCodes
+                .Concat(decision.ReasonCodes)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
+        };
 
         if (decision.Disposition == AdmissionDisposition.Reject)
         {
@@ -56,27 +100,31 @@ public sealed partial class MemoryService(
                 decision.Score,
                 scope,
                 decision.ReasonCodes,
-                Message: "Content was rejected before persistence.");
+                Message: "Content was rejected before persistence.",
+                Assurance: assurance);
         }
 
-        var effectiveIdentity = identity with
-        {
-            ActorId = NormalizeOptional(request.AgentId) ?? identity.ActorId,
-            SessionId = NormalizeOptional(request.SessionId) ?? identity.SessionId
-        };
+        var effectiveIdentity = assertionContext.SignatureVerified
+            ? identity with
+            {
+                ActorId = NormalizeOptional(request.AgentId) ?? identity.ActorId,
+                SessionId = NormalizeOptional(request.SessionId) ?? identity.SessionId
+            }
+            : identity;
 
         var evidence = new EvidenceEvent(
-            Guid.NewGuid(),
+            assurance.EventId ?? Guid.NewGuid(),
             effectiveIdentity,
             scope,
             statement,
             request.Kind,
-            request.Trust,
-            candidate.SourceType ?? "agent-observation",
+            assurance.EffectiveTrust,
+            sourceType,
             candidate.SourceReference,
             Sha256(statement),
             candidate.OccurredAt,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            assurance);
 
         var scopeHash = Sha256(scope.ToCanonicalString());
         var dedupeKey = Sha256(string.Join(
@@ -102,10 +150,21 @@ public sealed partial class MemoryService(
             decision.Disposition,
             decision.Score,
             scope,
-            decision.ReasonCodes);
+            decision.ReasonCodes,
+            Assurance: assurance,
+            Replayed: persisted.IsReplay);
     }
 
     public async Task<IReadOnlyList<MemorySearchHit>> SearchAsync(
+        MemorySearchRequest request,
+        RequestIdentity identity,
+        CancellationToken cancellationToken = default) =>
+        (await SearchWithTraceAsync(
+            request,
+            identity,
+            cancellationToken).ConfigureAwait(false)).Items;
+
+    public async Task<MemorySearchResponse> SearchWithTraceAsync(
         MemorySearchRequest request,
         RequestIdentity identity,
         CancellationToken cancellationToken = default)
@@ -130,14 +189,32 @@ public sealed partial class MemoryService(
         var filteredKinds = request.Kinds is { Count: > 0 }
             ? candidates.Where(claim => request.Kinds.Contains(claim.Kind))
             : candidates;
-
         var resolved = scopeResolver.Resolve(filteredKinds, normalizedScope, limit);
-
-        return resolved
+        var traceId = Guid.NewGuid();
+        var createdAt = DateTimeOffset.UtcNow;
+        var hits = resolved
             .Select(claim => ToHit(
                 claim,
-                scopeResolver.CalculateMatchScore(claim.Scope, normalizedScope)))
+                scopeResolver.CalculateMatchScore(claim.Scope, normalizedScope),
+                traceId))
             .ToArray();
+
+        await _telemetryStore.RecordTraceAsync(
+            new RetrievalTrace(
+                traceId,
+                identity,
+                request.Query.Trim(),
+                normalizedScope,
+                hits.Select((hit, index) =>
+                        new RetrievalTraceItem(
+                            hit.ClaimId,
+                            index + 1,
+                            hit.Relevance))
+                    .ToArray(),
+                createdAt),
+            cancellationToken).ConfigureAwait(false);
+
+        return new MemorySearchResponse(traceId, hits, createdAt);
     }
 
     public async Task<MemoryContextPacket> CompileContextAsync(
@@ -149,7 +226,7 @@ public sealed partial class MemoryService(
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Task);
 
         var maxItems = Math.Clamp(request.TokenBudget / 100, 4, 30);
-        var hits = await SearchAsync(
+        var response = await SearchWithTraceAsync(
             new MemorySearchRequest
             {
                 Query = request.Task,
@@ -159,6 +236,7 @@ public sealed partial class MemoryService(
             },
             identity,
             cancellationToken).ConfigureAwait(false);
+        var hits = response.Items;
 
         var sections = hits
             .GroupBy(hit => SectionName(hit.Kind, hit.Status))
@@ -176,7 +254,41 @@ public sealed partial class MemoryService(
             request.Scope.Normalize(identity.TenantId),
             sections,
             estimatedTokens,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            response.TraceId);
+    }
+
+    public async Task<RetrievalFeedbackResult> RecordFeedbackAsync(
+        RetrievalFeedbackRequest request,
+        RequestIdentity identity,
+        SourceAssertionContext assertionContext,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(assertionContext);
+
+        var assurance = _sourceAssuranceEvaluator.EvaluateFeedback(
+            request,
+            identity,
+            assertionContext);
+
+        if (!identity.IsAdministrator && !assurance.SignatureVerified)
+        {
+            return new RetrievalFeedbackResult(
+                request.TraceId,
+                request.Outcome,
+                0,
+                Accepted: false,
+                Authoritative: false,
+                assurance.ReasonCodes);
+        }
+
+        return await _telemetryStore.ApplyFeedbackAsync(
+            request,
+            identity,
+            assurance,
+            cancellationToken).ConfigureAwait(false);
     }
 
     public Task<MemoryExplanation?> ExplainAsync(
@@ -187,7 +299,8 @@ public sealed partial class MemoryService(
 
     private static MemorySearchHit ToHit(
         MemoryClaim claim,
-        double scopeScore)
+        double scopeScore,
+        Guid traceId)
     {
         var statusWeight = claim.Status == MemoryStatus.Active ? 1.0 : 0.72;
         var scopeWeight = Math.Max(0, scopeScore) / 150.0;
@@ -210,7 +323,8 @@ public sealed partial class MemoryService(
             claim.UpdatedAt,
             claim.Status == MemoryStatus.Active
                 ? "governed-active-memory"
-                : "probation-memory");
+                : "probation-memory",
+            traceId);
     }
 
     private static ResolutionPolicy ResolvePolicy(

@@ -53,6 +53,7 @@ public sealed class DeviceAuthenticationMiddleware(
                 actorId,
                 sessionId,
                 IsAdministrator: true);
+            identityAccessor.RawBearerToken = rawToken;
 
             await next(context).ConfigureAwait(false);
             return;
@@ -77,6 +78,7 @@ public sealed class DeviceAuthenticationMiddleware(
             device.DeviceId,
             actorId,
             sessionId);
+        identityAccessor.RawBearerToken = rawToken;
 
         await next(context).ConfigureAwait(false);
     }

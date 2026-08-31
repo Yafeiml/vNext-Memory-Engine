@@ -8,9 +8,7 @@ namespace VNext.Memory.Edge;
 
 public sealed record OutboxItem(
     Guid Id,
-    MemoryRecordRequest Request,
-    string ActorId,
-    string? SessionId,
+    SignedEvidenceEnvelope Envelope,
     int Attempts);
 
 public sealed class SqliteOutbox(
@@ -23,6 +21,7 @@ public sealed class SqliteOutbox(
     };
 
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly EdgeOptions _options = options.Value;
     private readonly string _connectionString = BuildConnectionString(options.Value.OutboxPath);
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
@@ -62,9 +61,7 @@ public sealed class SqliteOutbox(
     }
 
     public async Task EnqueueAsync(
-        MemoryRecordRequest request,
-        string actorId,
-        string? sessionId,
+        SignedEvidenceEnvelope envelope,
         CancellationToken cancellationToken)
     {
         await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -81,16 +78,21 @@ public sealed class SqliteOutbox(
                     next_attempt_at, created_at)
                 VALUES (
                     $id, $payload, $actorId, $sessionId, 0,
-                    $nextAttemptAt, $createdAt);
+                    $nextAttemptAt, $createdAt)
+                ON CONFLICT(id) DO NOTHING;
                 """;
-            command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString("D"));
+            command.Parameters.AddWithValue("$id", envelope.EventId.ToString("D"));
             command.Parameters.AddWithValue(
                 "$payload",
-                JsonSerializer.Serialize(request, JsonOptions));
-            command.Parameters.AddWithValue("$actorId", actorId);
+                JsonSerializer.Serialize(envelope, JsonOptions));
+            command.Parameters.AddWithValue(
+                "$actorId",
+                string.IsNullOrWhiteSpace(envelope.Observation.AgentId)
+                    ? _options.DefaultActorId
+                    : envelope.Observation.AgentId);
             command.Parameters.AddWithValue(
                 "$sessionId",
-                (object?)sessionId ?? DBNull.Value);
+                (object?)envelope.Observation.SessionId ?? DBNull.Value);
             command.Parameters.AddWithValue("$nextAttemptAt", now);
             command.Parameters.AddWithValue("$createdAt", now);
 
@@ -129,24 +131,36 @@ public sealed class SqliteOutbox(
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            var id = Guid.Parse(reader.GetString(0));
             var payload = reader.GetString(1);
-            var request = JsonSerializer.Deserialize<MemoryRecordRequest>(
-                payload,
-                JsonOptions);
+            var envelope = DeserializeEnvelope(payload);
 
-            if (request is null)
+            if (envelope is null)
+            {
+                var legacyRequest = DeserializeLegacyRequest(payload);
+                if (legacyRequest is not null)
+                {
+                    envelope = EvidenceEnvelopeCryptography.SignEvidence(
+                        legacyRequest,
+                        EvidenceChannel.AgentObservation,
+                        "vnext-memory-edge-legacy-outbox",
+                        _options.CoreToken,
+                        adapterVersion: "0.2.0",
+                        eventId: id);
+                }
+            }
+
+            if (envelope is null)
             {
                 logger.LogWarning(
-                    "Dropping unreadable outbox item {OutboxId}.",
-                    reader.GetString(0));
+                    "Ignoring unreadable outbox item {OutboxId}.",
+                    id);
                 continue;
             }
 
             items.Add(new OutboxItem(
-                Guid.Parse(reader.GetString(0)),
-                request,
-                reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3),
+                id,
+                envelope,
                 reader.GetInt32(4)));
         }
 
@@ -213,6 +227,40 @@ public sealed class SqliteOutbox(
         finally
         {
             _writeGate.Release();
+        }
+    }
+
+    private static SignedEvidenceEnvelope? DeserializeEnvelope(string payload)
+    {
+        try
+        {
+            var envelope = JsonSerializer.Deserialize<SignedEvidenceEnvelope>(
+                payload,
+                JsonOptions);
+            if (envelope is null ||
+                envelope.EventId == Guid.Empty ||
+                envelope.Observation is null)
+            {
+                return null;
+            }
+
+            return envelope;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static MemoryRecordRequest? DeserializeLegacyRequest(string payload)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<MemoryRecordRequest>(payload, JsonOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 

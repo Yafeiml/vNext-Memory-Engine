@@ -7,6 +7,19 @@ public interface IMemoryAdmissionController
         CancellationToken cancellationToken = default);
 }
 
+public interface ISourceAssuranceEvaluator
+{
+    SourceAssurance Evaluate(
+        MemoryRecordRequest request,
+        RequestIdentity identity,
+        SourceAssertionContext context);
+
+    SourceAssurance EvaluateFeedback(
+        RetrievalFeedbackRequest request,
+        RequestIdentity identity,
+        SourceAssertionContext context);
+}
+
 public interface IScopeResolver
 {
     MemoryScope InferAndNormalizeScope(
@@ -50,6 +63,19 @@ public interface IMemoryRepository
         CancellationToken cancellationToken);
 }
 
+public interface IRetrievalTelemetryStore
+{
+    Task RecordTraceAsync(
+        RetrievalTrace trace,
+        CancellationToken cancellationToken);
+
+    Task<RetrievalFeedbackResult> ApplyFeedbackAsync(
+        RetrievalFeedbackRequest request,
+        RequestIdentity identity,
+        SourceAssurance assurance,
+        CancellationToken cancellationToken);
+}
+
 public interface IMemoryService
 {
     Task<RecordMemoryResult> RecordAsync(
@@ -57,7 +83,18 @@ public interface IMemoryService
         RequestIdentity identity,
         CancellationToken cancellationToken = default);
 
+    Task<RecordMemoryResult> RecordAsync(
+        MemoryRecordRequest request,
+        RequestIdentity identity,
+        SourceAssertionContext assertionContext,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<MemorySearchHit>> SearchAsync(
+        MemorySearchRequest request,
+        RequestIdentity identity,
+        CancellationToken cancellationToken = default);
+
+    Task<MemorySearchResponse> SearchWithTraceAsync(
         MemorySearchRequest request,
         RequestIdentity identity,
         CancellationToken cancellationToken = default);
@@ -65,6 +102,12 @@ public interface IMemoryService
     Task<MemoryContextPacket> CompileContextAsync(
         ContextCompileRequest request,
         RequestIdentity identity,
+        CancellationToken cancellationToken = default);
+
+    Task<RetrievalFeedbackResult> RecordFeedbackAsync(
+        RetrievalFeedbackRequest request,
+        RequestIdentity identity,
+        SourceAssertionContext assertionContext,
         CancellationToken cancellationToken = default);
 
     Task<MemoryExplanation?> ExplainAsync(
