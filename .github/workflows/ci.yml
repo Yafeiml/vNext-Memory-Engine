@@ -33,7 +33,141 @@ jobs:
     needs: build-test
     steps:
       - uses: actions/checkout@v4
+
       - name: Build core image
         run: docker build -f src/VNext.Memory.Core/Dockerfile -t vnext-memory-core:ci .
+
       - name: Build edge image
         run: docker build -f src/VNext.Memory.Edge/Dockerfile -t vnext-memory-edge:ci .
+
+      - name: Smoke test distributed deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker network create vnext-ci
+          docker run -d \
+            --name vnext-postgres \
+            --network vnext-ci \
+            -e POSTGRES_DB=vnext_memory \
+            -e POSTGRES_USER=vnext \
+            -e POSTGRES_PASSWORD=vnext-ci-password \
+            postgres:17-alpine
+
+          for _ in {1..30}; do
+            if docker exec vnext-postgres pg_isready -U vnext -d vnext_memory; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec vnext-postgres pg_isready -U vnext -d vnext_memory
+
+          docker run -d \
+            --name vnext-core \
+            --network vnext-ci \
+            -p 7337:8080 \
+            -e ASPNETCORE_URLS=http://+:8080 \
+            -e ConnectionStrings__Memory='Host=vnext-postgres;Port=5432;Database=vnext_memory;Username=vnext;Password=vnext-ci-password' \
+            -e Security__BootstrapToken=ci-bootstrap-secret \
+            vnext-memory-core:ci
+
+          for _ in {1..30}; do
+            if curl -fsS http://127.0.0.1:7337/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:7337/health
+
+          device_response="$(curl -fsS -X POST http://127.0.0.1:7337/api/v1/devices/register \
+            -H 'Authorization: Bearer ci-bootstrap-secret' \
+            -H 'X-VME-Tenant: ci' \
+            -H 'X-VME-Principal: ci-user' \
+            -H 'Content-Type: application/json' \
+            -d '{"tenantId":"ci","principalId":"ci-user","deviceName":"ci-edge"}')"
+          device_token="$(jq -er '.deviceToken' <<<"$device_response")"
+
+          docker run -d \
+            --name vnext-edge \
+            --network vnext-ci \
+            -p 7338:8080 \
+            -e ASPNETCORE_URLS=http://+:8080 \
+            -e Edge__CoreUrl=http://vnext-core:8080 \
+            -e Edge__CoreToken="$device_token" \
+            -e Edge__TenantId=ci \
+            -e Edge__PrincipalId=ci-user \
+            -e Edge__DefaultActorId=codex \
+            vnext-memory-edge:ci
+
+          for _ in {1..30}; do
+            if curl -fsS http://127.0.0.1:7338/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:7338/health
+
+          record_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/memories/record \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "content":"Setting ShowInTaskbar alone did not fix the Windows taskbar issue.",
+              "kind":"FailedApproach",
+              "trust":"ToolObserved",
+              "memoryKey":"windows.taskbar.show-in-taskbar",
+              "sourceType":"test-run",
+              "sourceReference":"ci:test-run:1",
+              "agentId":"codex",
+              "hasDeterministicEvidence":true,
+              "scope":{
+                "projectId":"vnext-ci",
+                "repositoryId":"github.com/yafeiml/vnext-memory-engine",
+                "branch":"main",
+                "environment":"ci"
+              }
+            }')"
+          jq -e '.disposition == "Active"' <<<"$record_response" >/dev/null
+
+          search_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/memories/search \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "query":"ShowInTaskbar taskbar",
+              "limit":10,
+              "scope":{
+                "projectId":"vnext-ci",
+                "repositoryId":"github.com/yafeiml/vnext-memory-engine",
+                "branch":"main",
+                "environment":"ci"
+              }
+            }')"
+          jq -e 'length >= 1' <<<"$search_response" >/dev/null
+
+          context_response="$(curl -fsS -X POST http://127.0.0.1:7338/api/v1/context/compile \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "task":"Investigate the Windows taskbar issue",
+              "tokenBudget":800,
+              "scope":{
+                "projectId":"vnext-ci",
+                "repositoryId":"github.com/yafeiml/vnext-memory-engine",
+                "branch":"main",
+                "environment":"ci"
+              }
+            }')"
+          jq -e '.sections | length >= 1' <<<"$context_response" >/dev/null
+
+      - name: Collect smoke logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifacts/smoke
+          docker logs vnext-postgres > artifacts/smoke/postgres.log 2>&1 || true
+          docker logs vnext-core > artifacts/smoke/core.log 2>&1 || true
+          docker logs vnext-edge > artifacts/smoke/edge.log 2>&1 || true
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: artifacts/smoke
+          if-no-files-found: ignore

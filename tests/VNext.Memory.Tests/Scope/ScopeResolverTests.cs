@@ -103,6 +103,32 @@ public sealed class ScopeResolverTests
         Assert.IsNull(scope.UserId);
     }
 
+    [TestMethod]
+    public void NonAdministratorCannotWriteAnotherUsersScopedMemory()
+    {
+        var request = new MemoryRecordRequest
+        {
+            Content = "用户偏好详细解释。",
+            Kind = MemoryKind.Preference,
+            Trust = SourceTrust.UserExplicit,
+            Scope = new MemoryScope
+            {
+                UserId = "another-user"
+            }
+        };
+
+        var scope = _resolver.InferAndNormalizeScope(
+            request,
+            new RequestIdentity(
+                "personal",
+                "anna",
+                Guid.NewGuid(),
+                "codex",
+                "session-1"));
+
+        Assert.AreEqual("anna", scope.UserId);
+    }
+
     private static MemoryClaim Claim(
         string statement,
         string? key,

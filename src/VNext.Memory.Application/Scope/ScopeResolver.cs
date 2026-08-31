@@ -11,7 +11,16 @@ public sealed class ScopeResolver : IScopeResolver
         var scope = request.Scope.Normalize(identity.TenantId);
 
         if (request.Kind == MemoryKind.Preference &&
-            string.IsNullOrWhiteSpace(scope.UserId))
+            (string.IsNullOrWhiteSpace(scope.UserId) || !identity.IsAdministrator))
+        {
+            scope = scope with { UserId = identity.PrincipalId };
+        }
+        else if (!identity.IsAdministrator &&
+                 !string.IsNullOrWhiteSpace(scope.UserId) &&
+                 !string.Equals(
+                     scope.UserId,
+                     identity.PrincipalId,
+                     StringComparison.OrdinalIgnoreCase))
         {
             scope = scope with { UserId = identity.PrincipalId };
         }

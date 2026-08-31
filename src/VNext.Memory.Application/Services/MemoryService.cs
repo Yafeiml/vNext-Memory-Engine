@@ -113,7 +113,10 @@ public sealed partial class MemoryService(
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(identity);
 
-        var normalizedScope = request.Scope.Normalize(identity.TenantId);
+        var normalizedScope = request.Scope.Normalize(identity.TenantId) with
+        {
+            UserId = identity.PrincipalId
+        };
         var limit = Math.Clamp(request.Limit, 1, MaximumSearchLimit);
         var candidates = await repository
             .SearchAsync(
