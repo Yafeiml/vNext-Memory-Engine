@@ -109,6 +109,71 @@ public sealed class PostgresSchemaMigrator(NpgsqlDataSource dataSource)
 
         CREATE INDEX IF NOT EXISTS ix_admission_evidence
             ON admission_decisions (evidence_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS evidence_assurance (
+            evidence_id uuid PRIMARY KEY REFERENCES evidence_events(id) ON DELETE CASCADE,
+            event_id uuid NOT NULL UNIQUE,
+            channel smallint NOT NULL,
+            assurance_level smallint NOT NULL,
+            claimed_trust smallint NOT NULL,
+            effective_trust smallint NOT NULL,
+            signature_verified boolean NOT NULL,
+            explicit_remember_verified boolean NOT NULL,
+            correction_verified boolean NOT NULL,
+            deterministic_verified boolean NOT NULL,
+            adapter text NOT NULL,
+            adapter_version text NULL,
+            payload_hash char(64) NULL,
+            proof jsonb NULL,
+            reason_codes jsonb NOT NULL,
+            created_at timestamptz NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_evidence_assurance_channel
+            ON evidence_assurance (channel, assurance_level, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS retrieval_traces (
+            id uuid PRIMARY KEY,
+            tenant_id text NOT NULL,
+            principal_id text NOT NULL,
+            device_id uuid NULL,
+            actor_id text NOT NULL,
+            session_id text NULL,
+            query text NOT NULL,
+            scope jsonb NOT NULL,
+            created_at timestamptz NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_retrieval_traces_tenant_time
+            ON retrieval_traces (tenant_id, principal_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS retrieval_trace_items (
+            trace_id uuid NOT NULL REFERENCES retrieval_traces(id) ON DELETE CASCADE,
+            claim_id uuid NOT NULL REFERENCES memory_claims(id) ON DELETE CASCADE,
+            rank integer NOT NULL,
+            relevance double precision NOT NULL,
+            PRIMARY KEY (trace_id, claim_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS retrieval_feedback (
+            id uuid PRIMARY KEY,
+            trace_id uuid NOT NULL REFERENCES retrieval_traces(id) ON DELETE CASCADE,
+            tenant_id text NOT NULL,
+            principal_id text NOT NULL,
+            device_id uuid NULL,
+            actor_id text NOT NULL,
+            outcome smallint NOT NULL,
+            detail text NULL,
+            channel smallint NOT NULL,
+            assurance_level smallint NOT NULL,
+            effective_trust smallint NOT NULL,
+            authoritative boolean NOT NULL,
+            reason_codes jsonb NOT NULL,
+            created_at timestamptz NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS ix_retrieval_feedback_trace
+            ON retrieval_feedback (trace_id, created_at DESC);
         """;
 
     public async Task MigrateAsync(CancellationToken cancellationToken = default)

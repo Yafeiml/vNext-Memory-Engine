@@ -27,13 +27,14 @@ builder.Services
     .AddPostgresMemory(connectionString);
 
 builder.Services.AddScoped<RequestIdentityAccessor>();
+builder.Services.AddSingleton<EvidenceEnvelopeVerifier>();
 builder.Services
     .AddMcpServer(options =>
     {
         options.ServerInfo = new Implementation
         {
             Name = "vnext-memory-core",
-            Version = "0.1.0"
+            Version = "0.2.0"
         };
     })
     .WithHttpTransport()
@@ -54,7 +55,7 @@ app.MapGet("/health", () => Results.Ok(new
 {
     status = "healthy",
     service = "vnext-memory-core",
-    version = "0.1.0"
+    version = "0.2.0"
 }));
 
 app.MapGet("/ready", () => Results.Ok(new
@@ -101,6 +102,37 @@ api.MapPost(
     });
 
 api.MapPost(
+    "/evidence/ingest",
+    async (
+        SignedEvidenceEnvelope envelope,
+        RequestIdentityAccessor identityAccessor,
+        EvidenceEnvelopeVerifier verifier,
+        IMemoryService memoryService,
+        CancellationToken cancellationToken) =>
+    {
+        try
+        {
+            var assertion = verifier.VerifyEvidence(envelope, identityAccessor);
+            var result = await memoryService.RecordAsync(
+                envelope.Observation,
+                identityAccessor.GetRequiredIdentity(),
+                assertion,
+                cancellationToken);
+            return Results.Ok(result);
+        }
+        catch (EvidenceEnvelopeValidationException exception)
+        {
+            return Results.Json(
+                new
+                {
+                    error = exception.Code,
+                    detail = exception.Message
+                },
+                statusCode: exception.StatusCode);
+        }
+    });
+
+api.MapPost(
     "/memories/record",
     async (
         MemoryRecordRequest request,
@@ -128,6 +160,52 @@ api.MapPost(
             identityAccessor.GetRequiredIdentity(),
             cancellationToken);
         return Results.Ok(result);
+    });
+
+api.MapPost(
+    "/retrieval/search",
+    async (
+        MemorySearchRequest request,
+        RequestIdentityAccessor identityAccessor,
+        IMemoryService memoryService,
+        CancellationToken cancellationToken) =>
+    {
+        var result = await memoryService.SearchWithTraceAsync(
+            request,
+            identityAccessor.GetRequiredIdentity(),
+            cancellationToken);
+        return Results.Ok(result);
+    });
+
+api.MapPost(
+    "/retrieval/feedback",
+    async (
+        SignedRetrievalFeedbackEnvelope envelope,
+        RequestIdentityAccessor identityAccessor,
+        EvidenceEnvelopeVerifier verifier,
+        IMemoryService memoryService,
+        CancellationToken cancellationToken) =>
+    {
+        try
+        {
+            var assertion = verifier.VerifyFeedback(envelope, identityAccessor);
+            var result = await memoryService.RecordFeedbackAsync(
+                envelope.Feedback,
+                identityAccessor.GetRequiredIdentity(),
+                assertion,
+                cancellationToken);
+            return Results.Ok(result);
+        }
+        catch (EvidenceEnvelopeValidationException exception)
+        {
+            return Results.Json(
+                new
+                {
+                    error = exception.Code,
+                    detail = exception.Message
+                },
+                statusCode: exception.StatusCode);
+        }
     });
 
 api.MapPost(

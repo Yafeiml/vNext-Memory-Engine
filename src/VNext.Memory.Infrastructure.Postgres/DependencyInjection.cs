@@ -17,10 +17,14 @@ public static class DependencyInjection
 
         services.AddSingleton<PostgresSchemaMigrator>();
         services.AddScoped<PostgresMemoryRepository>();
+        services.AddScoped<PostgresAssuredMemoryRepository>();
+        services.AddScoped<PostgresRetrievalTelemetryStore>();
         services.AddScoped<IMemoryRepository>(
-            provider => provider.GetRequiredService<PostgresMemoryRepository>());
+            provider => provider.GetRequiredService<PostgresAssuredMemoryRepository>());
         services.AddScoped<IDeviceIdentityStore>(
             provider => provider.GetRequiredService<PostgresMemoryRepository>());
+        services.AddScoped<IRetrievalTelemetryStore>(
+            provider => provider.GetRequiredService<PostgresRetrievalTelemetryStore>());
 
         return services;
     }
